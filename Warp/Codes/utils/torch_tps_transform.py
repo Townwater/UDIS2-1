@@ -3,7 +3,15 @@ import numpy as np
 
 # transforming an image (U) from target (control points) to source (control points)
 # all the points should be normalized from -1 ~1
-
+def safe_inverse(tensor):
+    try:
+        return torch.inverse(tensor)
+    except RuntimeError as e:
+        if "cusolver error: 7" in str(e):
+            # print("⚠️ GPU torch.inverse 失敗，改用 CPU 版本")
+            return torch.inverse(tensor.cpu()).to(tensor.device)
+        else:
+            raise e
 def transformer(U, source, target, out_size):
 
     def _repeat(x, n_repeats):
@@ -170,7 +178,7 @@ def transformer(U, source, target, out_size):
         W_1 = torch.cat((zeros, p.permute(0,2,1)), 2) # [bn, 3, pn+3]
         W = torch.cat((W_0, W_1), 1) # [bn, pn+3, pn+3]
 
-        W_inv = torch.inverse(W.type(torch.float64))
+        W_inv = safe_inverse(W.type(torch.float64))
 
 
         zeros2 = torch.zeros(num_batch, 3, 2)

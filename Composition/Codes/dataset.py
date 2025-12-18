@@ -78,7 +78,9 @@ class TestDataset(Dataset):
 
         datas = glob.glob(os.path.join(self.test_path, '*'))
         for data in sorted(datas):
-            data_name = data.split('/')[-1]
+            # data_name = data.split('/')[-1]
+            data_name = os.path.basename(data)
+            print(data_name)
             if data_name == 'warp1' or data_name == 'warp2' or data_name == 'mask1' or data_name == 'mask2':
                 self.datas[data_name] = {}
                 self.datas[data_name]['path'] = data

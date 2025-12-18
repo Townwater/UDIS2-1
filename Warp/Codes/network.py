@@ -1,8 +1,7 @@
 import torch
 import torch.nn as nn
-import utils.torch_DLT as torch_DLT
-import utils.torch_homo_transform as torch_homo_transform
-import utils.torch_tps_transform as torch_tps_transform
+from Warp.Codes.utils import torch_DLT,torch_homo_transform,torch_tps_transform
+from Warp.Codes import grid_res
 import ssl
 import torch.nn.functional as F
 import cv2
@@ -12,7 +11,6 @@ import torchvision.models as models
 import torchvision.transforms as T
 resize_512 = T.Resize((512,512))
 
-import grid_res
 grid_h = grid_res.GRID_H
 grid_w = grid_res.GRID_W
 
@@ -20,6 +18,15 @@ grid_w = grid_res.GRID_W
 # draw mesh on image
 # warp: h*w*3
 # f_local: grid_h*grid_w*2
+def safe_inverse(tensor):
+    try:
+        return torch.inverse(tensor)
+    except RuntimeError as e:
+        if "cusolver error: 7" in str(e):
+            # print("⚠️ GPU torch.inverse 失敗，改用 CPU 版本")
+            return torch.inverse(tensor.cpu()).to(tensor.device)
+        else:
+            raise e
 def draw_mesh_on_warp(warp, f_local):
 
     warp = np.ascontiguousarray(warp)
@@ -49,7 +56,7 @@ def draw_mesh_on_warp(warp, f_local):
 #Covert global homo into mesh
 def H2Mesh(H, rigid_mesh):
 
-    H_inv = torch.inverse(H)
+    H_inv = safe_inverse(H)
     ori_pt = rigid_mesh.reshape(rigid_mesh.size()[0], -1, 2)
     ones = torch.ones(rigid_mesh.size()[0], (grid_h+1)*(grid_w+1),1)
     if torch.cuda.is_available():
@@ -115,7 +122,24 @@ def data_aug(img1, img2):
 
     return img1_aug, img2_aug
 
+def scaled_resize_pad(image):
+    _,_,h,w = image.shape
+    scale = 512/max(h,w)
+    new_h = int(h*scale)
+    new_w = int(w*scale)
+    resized_image = F.interpolate(image, size=(new_h, new_w), mode="bilinear")
 
+    pad_h = 512 - new_h
+    pad_w = 512 - new_w
+
+    # 上下左右平均補，不讓影像偏移
+    pad_top = pad_h // 2
+    pad_bottom = pad_h - pad_top
+    pad_left = pad_w // 2
+    pad_right = pad_w - pad_left
+
+    padded_image = F.pad(resized_image, (pad_left, pad_right, pad_top, pad_bottom))
+    return padded_image, scale
 # for train.py / test.py
 def build_model(net, input1_tensor, input2_tensor, is_training = True):
     batch_size, _, img_h, img_w = input1_tensor.size()
@@ -148,7 +172,7 @@ def build_model(net, input1_tensor, input2_tensor, is_training = True):
         M_tensor = M_tensor.cuda()
 
     M_tile = M_tensor.unsqueeze(0).expand(batch_size, -1, -1)
-    M_tensor_inv = torch.inverse(M_tensor)
+    M_tensor_inv = safe_inverse(M_tensor)
     M_tile_inv = M_tensor_inv.unsqueeze(0).expand(batch_size, -1, -1)
     H_mat = torch.matmul(torch.matmul(M_tile_inv, H), M_tile)
 
@@ -157,7 +181,9 @@ def build_model(net, input1_tensor, input2_tensor, is_training = True):
         mask = mask.cuda()
     output_H = torch_homo_transform.transformer(torch.cat((input2_tensor, mask), 1), H_mat, (img_h, img_w))
 
-    H_inv_mat = torch.matmul(torch.matmul(M_tile_inv, torch.inverse(H)), M_tile)
+    H_inv_mat = torch.matmul(torch.matmul(M_tile_inv, safe_inverse(H)), M_tile)
+    
+    
     output_H_inv = torch_homo_transform.transformer(torch.cat((input1_tensor, mask), 1), H_inv_mat, (img_h, img_w))
 
     rigid_mesh = get_rigid_mesh(batch_size, img_h, img_w)
@@ -283,13 +309,11 @@ def get_stitched_result(input1_tensor, input2_tensor, rigid_mesh, mesh):
 
 
 # for test_output.py
-def build_output_model(net, input1_tensor, input2_tensor):
+def build_output_model(net, input1_tensor, input2_tensor, mask1 = None, mask2 = None):
     batch_size, _, img_h, img_w = input1_tensor.size()
+    H_motion, mesh_motion = net(input1_tensor, input2_tensor, mask1, mask2)
 
-    resized_input1 = resize_512(input1_tensor)
-    resized_input2 = resize_512(input2_tensor)
-    H_motion, mesh_motion = net(resized_input1, resized_input2)
-
+    
     H_motion = H_motion.reshape(-1, 4, 2)
     H_motion = torch.stack([H_motion[...,0]*img_w/512, H_motion[...,1]*img_h/512], 2)
     mesh_motion = mesh_motion.reshape(-1, grid_h+1, grid_w+1, 2)
@@ -321,8 +345,6 @@ def build_output_model(net, input1_tensor, input2_tensor):
 
     out_width = width_max - width_min
     out_height = height_max - height_min
-    #print(out_width)
-    #print(out_height)
 
     # get warped img1
     M_tensor = torch.tensor([[out_width / 2.0, 0., out_width / 2.0],
@@ -331,6 +353,7 @@ def build_output_model(net, input1_tensor, input2_tensor):
     N_tensor = torch.tensor([[img_w / 2.0, 0., img_w / 2.0],
                       [0., img_h / 2.0, img_h / 2.0],
                       [0., 0., 1.]])
+    
     if torch.cuda.is_available():
         M_tensor = M_tensor.cuda()
         N_tensor = N_tensor.cuda()
@@ -344,7 +367,7 @@ def build_output_model(net, input1_tensor, input2_tensor):
         I_ = I_.cuda()
         mask = mask.cuda()
     I_mat = torch.matmul(torch.matmul(N_tensor_inv, I_), M_tensor).unsqueeze(0)
-
+    # print(f"out_height = {out_height}, out_width = {out_width}")
     homo_output = torch_homo_transform.transformer(torch.cat((input1_tensor+1, mask), 1), I_mat, (out_height.int(), out_width.int()))
 
     torch.cuda.empty_cache()
@@ -359,7 +382,6 @@ def build_output_model(net, input1_tensor, input2_tensor):
     out_dict.update(final_warp1=homo_output[:, 0:3, ...]-1, final_warp1_mask = homo_output[:, 3:6, ...], final_warp2=tps_output[:, 0:3, ...]-1, final_warp2_mask = tps_output[:, 3:6, ...], mesh1=rigid_mesh, mesh2=mesh_trans)
 
     return out_dict
-
 
 
 # define and forward
@@ -472,21 +494,42 @@ class Network(nn.Module):
         return feature_extractor_stage1, feature_extractor_stage2
 
     # forward
-    def forward(self, input1_tesnor, input2_tesnor):
+    def forward(self, input1_tesnor, input2_tesnor, mask1 = None, mask2 = None):
         batch_size, _, img_h, img_w = input1_tesnor.size()
 
         feature_1_64 = self.feature_extractor_stage1(input1_tesnor)
         feature_1_32 = self.feature_extractor_stage2(feature_1_64)
         feature_2_64 = self.feature_extractor_stage1(input2_tesnor)
         feature_2_32 = self.feature_extractor_stage2(feature_2_64)
-
+        
+        if mask1 is not None and mask2 is not None:
+            # print(f"before interpolate mask2 = {mask2.shape}")
+            mask_1_64 = F.interpolate(mask1, size=feature_1_64.shape[-2:], mode="nearest")
+            mask_1_32 = F.interpolate(mask1, size=feature_1_32.shape[-2:], mode="nearest")
+            mask_2_64 = F.interpolate(mask2, size=feature_2_64.shape[-2:], mode="nearest")
+            mask_2_32 = F.interpolate(mask2, size=feature_2_32.shape[-2:], mode="nearest")
+            # print(f"after interpolate mask2_64 = {mask_2_64.shape}")
+            # print(feature_1_64.device)
+            # print(mask_1_64.device)
+            # feature_1_64 = feature_1_64 * mask_1_64
+            # feature_1_32 = feature_1_32 * mask_1_32
+            # feature_2_64 = feature_2_64 * mask_2_64
+            # feature_2_32 = feature_2_32 * mask_2_32
+        else:
+            mask_1_64 = None
+            mask_1_32 = None
+            mask_2_64 = None
+            mask_2_32 = None
         ######### stage 1
-        correlation_32 = self.CCL(feature_1_32, feature_2_32)
+        # correlation_32 = self.CCL(feature_1_32, feature_2_32)
+        correlation_32 = self.Multi_scale_CCL(feature_1_32, feature_2_32, kernel=[3,5,7], mask_1 = mask_1_32, mask_2 = mask_2_32)
+        # print(f"correlation_32.shape = {correlation_32.shape}")
+        # print(f"correlation_32 max = {correlation_32.max().item()}, min = {correlation_32.min().item()}")
         temp_1 = self.regressNet1_part1(correlation_32)
         temp_1 = temp_1.view(temp_1.size()[0], -1)
         offset_1 = self.regressNet1_part2(temp_1)
         H_motion_1 = offset_1.reshape(-1, 4, 2)
-
+        # print(f"H_motion_1 = {H_motion_1.max().item()}, min = {H_motion_1.min().item()}")
 
         src_p = torch.tensor([[0., 0.], [img_w, 0.], [0., img_h], [img_w, img_h]])
         if torch.cuda.is_available():
@@ -503,14 +546,15 @@ class Network(nn.Module):
             M_tensor = M_tensor.cuda()
 
         M_tile = M_tensor.unsqueeze(0).expand(batch_size, -1, -1)
-        M_tensor_inv = torch.inverse(M_tensor)
+        M_tensor_inv = safe_inverse(M_tensor)
         M_tile_inv = M_tensor_inv.unsqueeze(0).expand(batch_size, -1, -1)
         H_mat = torch.matmul(torch.matmul(M_tile_inv, H), M_tile)
 
         warp_feature_2_64 = torch_homo_transform.transformer(feature_2_64, H_mat, (int(img_h/8), int(img_w/8)))
 
         ######### stage 2
-        correlation_64 = self.CCL(feature_1_64, warp_feature_2_64)
+        # correlation_64 = self.CCL(feature_1_64, warp_feature_2_64)
+        correlation_64 = self.Multi_scale_CCL(feature_1_64, warp_feature_2_64,kernel=[3,5,7], mask_1 = mask_1_64, mask_2 = mask_2_64)
         temp_2 = self.regressNet2_part1(correlation_64)
         temp_2 = temp_2.view(temp_2.size()[0], -1)
         offset_2 = self.regressNet2_part2(temp_2)
@@ -521,7 +565,8 @@ class Network(nn.Module):
 
     def extract_patches(self, x, kernel=3, stride=1):
         if kernel != 1:
-            x = nn.ZeroPad2d(1)(x)
+            padding = kernel // 2
+            x = nn.ZeroPad2d(padding)(x)
         x = x.permute(0, 2, 3, 1)
         all_patches = x.unfold(1, kernel, stride).unfold(2, kernel, stride)
         return all_patches
@@ -532,7 +577,7 @@ class Network(nn.Module):
 
         norm_feature_1 = F.normalize(feature_1, p=2, dim=1)
         norm_feature_2 = F.normalize(feature_2, p=2, dim=1)
-        #print(norm_feature_2.size())
+        # print(f"norm_feature_2.size() = {norm_feature_2.size()}")
 
         patches = self.extract_patches(norm_feature_2)
         if torch.cuda.is_available():
@@ -543,10 +588,12 @@ class Network(nn.Module):
         match_vol = []
         for i in range(bs):
             single_match = F.conv2d(norm_feature_1[i].unsqueeze(0), matching_filters[i], padding=1)
+            # print(f"single_match.shape = {single_match.shape}")
             match_vol.append(single_match)
-
+        # print(f"pre-cat match_vol.shape = {match_vol.size()}")
         match_vol = torch.cat(match_vol, 0)
-        #print(match_vol .size())
+        # print(f"post-cat match_vol.shape = {match_vol.size()}")
+        # print(f"match_vol.size() = {match_vol .size()}")
 
         # scale softmax
         softmax_scale = 10
@@ -584,3 +631,79 @@ class Network(nn.Module):
         #print(flow.size())
 
         return feature_flow
+    def Multi_scale_CCL(self, feature_1, feature_2, kernel, mask_1 = None, mask_2 = None):
+        bs, c, h, w = feature_1.size()
+
+        norm_feature_1 = F.normalize(feature_1, p=2, dim=1)
+        norm_feature_2 = F.normalize(feature_2, p=2, dim=1)
+        #print(norm_feature_2.size())
+        scaled_patches = []
+        for ks in kernel:
+            patches = self.extract_patches(norm_feature_2, ks)
+            if torch.cuda.is_available():
+                patches = patches.cuda()
+            scaled_patches.append(patches)
+
+        matching_filters = []
+        for patches in scaled_patches:
+            matching_filters.append(patches.reshape((patches.size()[0], -1, patches.size()[3], patches.size()[4], patches.size()[5]))) 
+
+        match_vol = [[] for _ in kernel]
+        for i in range(bs):
+            for idx, (filters, ks) in enumerate(zip(matching_filters, kernel)):
+                padding = ks // 2
+                # print(f"norm_feature_1.shape = {norm_feature_1.shape}, filter.shape = {filters.shape}")
+                # print(f"filter max = {filters[i].max().item()}, filter min = {filters[i].min().item()}, filter mean = {filters[i].mean().item()}, filter std = {filters[i].std().item()}")
+                single_match = F.conv2d(norm_feature_1[i].unsqueeze(0), filters[i], padding=padding)
+                match_vol[idx].append(single_match)
+                # print(f"single_match.shape = {single_match.shape}")
+        #print(match_vol .size())
+        softmax_scale = 10
+        # scale softmax
+        feature_flow = []
+        for mv in match_vol:
+            mv = torch.cat(mv, 0)
+            # print(f"mv.shape = {mv.shape}")
+            # print("mv pre-softmax: mean {:.3f}, std {:.3f}, max {:.3f}, min {:.3f}".format(mv.mean().item(), mv.std().item(), mv.max().item(), mv.min().item()))
+            if mask_1 is not None and mask_2 is not None:
+                # print(f"mask.shape = {mask_2.shape}")
+                mask2_exp = mask_2.expand_as(mv)  # expand 成 [bs, channel, h, w]
+                mv = mv.masked_fill(mask2_exp == 0, -1e-9)
+            mv = F.softmax(mv*softmax_scale,1)
+            # print("mv post-softmax: maxprob {:.3f}, meanmax {:.3f}".format(mv.max(dim=1)[0].mean().item(), mv.max().mean().item()))
+            channel = mv.size(1)
+
+            h_one = torch.linspace(0, h-1, h)
+            one1w = torch.ones(1, w)
+            if torch.cuda.is_available():
+                h_one = h_one.cuda()
+                one1w = one1w.cuda()
+            h_one = torch.matmul(h_one.unsqueeze(1), one1w)#太強拉 巧妙利用unsqueeze(1)讓原本h_one.shape = (h)變成(h,1)使其可以跟one1w.shape = (1,w)相乘
+            h_one = h_one.unsqueeze(0).unsqueeze(0).expand(bs, channel, -1, -1)#將座標擴展成與multi_match_vol的tensor一樣的格式
+
+            w_one = torch.linspace(0, w-1, w)
+            oneh1 = torch.ones(h, 1)
+            if torch.cuda.is_available():
+                w_one = w_one.cuda()
+                oneh1 = oneh1.cuda()
+            w_one = torch.matmul(oneh1, w_one.unsqueeze(0))#與上面同理 只是變成w_one.shape = (1,w) 所以可以(h,1)乘於(1,w)
+            w_one = w_one.unsqueeze(0).unsqueeze(0).expand(bs, channel, -1, -1)
+
+            c_one = torch.linspace(0, channel-1, channel)
+            if torch.cuda.is_available():
+                c_one = c_one.cuda()
+            c_one = c_one.unsqueeze(0).unsqueeze(2).unsqueeze(3).expand(bs, -1, h, w)
+
+            flow_h = mv*(c_one//w - h_one)
+            flow_h = torch.sum(flow_h, dim=1, keepdim=True)
+            flow_w = mv*(c_one%w - w_one)
+            flow_w = torch.sum(flow_w, dim=1, keepdim=True)
+
+            feature_flow.append(torch.cat([flow_w, flow_h], 1)) 
+            # print("hello")
+        #print(flow.size())
+        w_i = torch.tensor([0.5, 0.3, 0.2], device=feature_flow[0].device)
+        total_flow = sum(wi * ff for wi, ff in zip(w_i, feature_flow))
+
+        # total_flow = sum(feature_flow)
+        return total_flow

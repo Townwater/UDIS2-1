@@ -9,9 +9,10 @@ import numpy as np
 import cv2
 
 
-last_path = os.path.abspath(os.path.join(os.path.dirname("__file__"), os.path.pardir))
+last_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir))
 MODEL_DIR = os.path.join(last_path, 'model')
-
+# print(last_path)
+# print(MODEL_DIR)
 
 
 def test(args):
@@ -100,8 +101,8 @@ if __name__=="__main__":
 
     parser.add_argument('--gpu', type=str, default='0')
     parser.add_argument('--batch_size', type=int, default=1)
-    parser.add_argument('--test_path', type=str, default='/opt/data/private/nl/Data/UDIS-D/testing/')
-
+    # parser.add_argument('--test_path', type=str, default='/opt/data/private/nl/Data/UDIS-D/testing/')
+    parser.add_argument('--test_path', type=str, default=r'd:\UDIS2\testing')
     print('<==================== Loading data ===================>\n')
 
     args = parser.parse_args()

@@ -12,7 +12,7 @@ from loss import cal_boundary_term, cal_smooth_term_stitch, cal_smooth_term_diff
 
 
 # path of project
-last_path = os.path.abspath(os.path.join(os.path.dirname("__file__"), os.path.pardir))
+last_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir))
 
 # path to save the summary files
 SUMMARY_DIR = os.path.join(last_path, 'summary')
@@ -186,8 +186,8 @@ if __name__=="__main__":
     #nl: add arguments
     parser.add_argument('--gpu', type=str, default='0')
     parser.add_argument('--batch_size', type=int, default=1)
-    parser.add_argument('--max_epoch', type=int, default=50)
-    parser.add_argument('--train_path', type=str, default='/opt/data/private/nl/Data/UDIS-D/training')
+    parser.add_argument('--max_epoch', type=int, default=200)
+    parser.add_argument('--train_path', type=str, default=r'D:\UDIS2\testing')
 
     #nl: parse the arguments
     args = parser.parse_args()

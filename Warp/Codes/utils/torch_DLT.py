@@ -38,7 +38,12 @@ def tensor_DLT(src_p, dst_p):
     b = dst_p.reshape(bs, -1, 1)
     
     #h = A^{-1}b
-    Ainv = torch.inverse(A)
+    # print(f"A shape: {A.shape}, device: {A.device}, dtype: {A.dtype}")
+    # print("Any NaN in A?", torch.isnan(A).any().item())
+    # print("Any Inf in A?", torch.isinf(A).any().item())
+    # print("Determinant:", torch.det(A).item() if A.shape[-1] == A.shape[-2] else "Not square")
+    # Ainv = torch.inverse(A)
+    Ainv = torch.inverse(A.cpu()).to(A.device)
     h8 = torch.matmul(Ainv, b).reshape(bs, 8)
  
     H = torch.cat((h8, ones[:,0,:]), 1).reshape(bs, 3, 3)

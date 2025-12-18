@@ -13,7 +13,7 @@ import grid_res
 grid_h = grid_res.GRID_H
 grid_w = grid_res.GRID_W
 
-last_path = os.path.abspath(os.path.join(os.path.dirname("__file__"), os.path.pardir))
+last_path = os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir))
 MODEL_DIR = os.path.join(last_path, 'model')
 
 
@@ -52,12 +52,13 @@ def create_gif(image_list, gif_name, duration=0.35):
 
 
 def test(args):
-
+    
     os.environ['CUDA_DEVICES_ORDER'] = "PCI_BUS_ID"
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     
     # dataset
-    test_data = TestDataset(data_path=args.test_path)
+    # test_data = TestDataset(data_path=args.test_path)
+    test_data = SceneDataset(data_path=args.test_path)
     #nl: set num_workers = the number of cpus
     test_loader = DataLoader(dataset=test_data, batch_size=args.batch_size, num_workers=1, shuffle=False, drop_last=False)
 
@@ -85,18 +86,19 @@ def test(args):
     # create folders if it dose not exist
 
     path_ave_fusion = '../ave_fusion/'
+    # print(f"[DEBUG] Average fusion results will be saved to: {os.path.abspath(path_ave_fusion)}")
     if not os.path.exists(path_ave_fusion):
         os.makedirs(path_ave_fusion)
-    path_warp1 = args.test_path + 'warp1/'
+    path_warp1 = os.path.join(args.test_path, 'warp1')
     if not os.path.exists(path_warp1):
         os.makedirs(path_warp1)
-    path_warp2 = args.test_path + 'warp2/'
+    path_warp2 = os.path.join(args.test_path, 'warp2')
     if not os.path.exists(path_warp2):
         os.makedirs(path_warp2)
-    path_mask1 = args.test_path + 'mask1/'
+    path_mask1 = os.path.join(args.test_path, 'mask1')
     if not os.path.exists(path_mask1):
         os.makedirs(path_mask1)
-    path_mask2 = args.test_path + 'mask2/'
+    path_mask2 = os.path.join(args.test_path, 'mask2')
     if not os.path.exists(path_mask2):
         os.makedirs(path_mask2)
 
@@ -107,10 +109,9 @@ def test(args):
 
         #if i != 975:
         #    continue
-
+        
         inpu1_tesnor = batch_value[0].float()
         inpu2_tesnor = batch_value[1].float()
-
         if torch.cuda.is_available():
             inpu1_tesnor = inpu1_tesnor.cuda()
             inpu2_tesnor = inpu2_tesnor.cuda()
@@ -134,19 +135,26 @@ def test(args):
         final_mesh2 = final_mesh2[0].cpu().detach().numpy()
 
 
-
-        path = path_warp1 + str(i+1).zfill(6) + ".jpg"
-        cv2.imwrite(path, final_warp1)
-        path = path_warp2 + str(i+1).zfill(6) + ".jpg"
-        cv2.imwrite(path, final_warp2)
-        path = path_mask1 + str(i+1).zfill(6) + ".jpg"
-        cv2.imwrite(path, final_warp1_mask*255)
-        path = path_mask2 + str(i+1).zfill(6) + ".jpg"
-        cv2.imwrite(path, final_warp2_mask*255)
-
+        filename = str(i+1).zfill(6) + ".jpg"
         ave_fusion = final_warp1 * (final_warp1/ (final_warp1+final_warp2+1e-6)) + final_warp2 * (final_warp2/ (final_warp1+final_warp2+1e-6))
-        path = path_ave_fusion + str(i+1).zfill(6) + ".jpg"
-        cv2.imwrite(path, ave_fusion)
+        cv2.imwrite(os.path.join(path_warp1, filename), final_warp1)
+        cv2.imwrite(os.path.join(path_warp2, filename), final_warp2)
+        cv2.imwrite(os.path.join(path_mask1, filename), final_warp1_mask * 255)
+        cv2.imwrite(os.path.join(path_mask2, filename), final_warp2_mask * 255)
+        cv2.imwrite(os.path.join(path_ave_fusion, filename), ave_fusion)
+
+        # path = path_warp1 + str(i+1).zfill(6) + ".jpg"
+        # cv2.imwrite(path, final_warp1)
+        # path = path_warp2 + str(i+1).zfill(6) + ".jpg"
+        # cv2.imwrite(path, final_warp2)
+        # path = path_mask1 + str(i+1).zfill(6) + ".jpg"
+        # cv2.imwrite(path, final_warp1_mask*255)
+        # path = path_mask2 + str(i+1).zfill(6) + ".jpg"
+        # cv2.imwrite(path, final_warp2_mask*255)
+
+        # ave_fusion = final_warp1 * (final_warp1/ (final_warp1+final_warp2+1e-6)) + final_warp2 * (final_warp2/ (final_warp1+final_warp2+1e-6))
+        # path = path_ave_fusion + str(i+1).zfill(6) + ".jpg"
+        # cv2.imwrite(path, ave_fusion)
 
         print('i = {}'.format( i+1))
 
@@ -159,18 +167,18 @@ def test(args):
 
 
 if __name__=="__main__":
-
+    torch.cuda.empty_cache()
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--gpu', type=str, default='0')
     parser.add_argument('--batch_size', type=int, default=1)
     
     # /opt/data/private/nl/Data/UDIS-D/testing/  or  /opt/data/private/nl/Data/UDIS-D/training/
-    parser.add_argument('--test_path', type=str, default='/opt/data/private/nl/Data/UDIS-D/testing/')
-
+    # parser.add_argument('--test_path', type=str, default='/opt/data/private/nl/Data/UDIS-D/testing/')
+    parser.add_argument('--test_path', type=str, default=r'd:\UDIS2\testing')
 
     print('<==================== Loading data ===================>\n')
-
+    
     args = parser.parse_args()
     print(args)
     test(args)
