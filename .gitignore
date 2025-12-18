@@ -1,2 +1,11 @@
 *.pth
 *.tfevents.*
+__pycache__/
+runs/
+logs/
+venv/
+env/
+.env
+.vscode/
+sorted_image_testing_set/
+sorted_image_training_set

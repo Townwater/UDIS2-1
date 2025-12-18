@@ -421,8 +421,6 @@ def test(args):
     wnet = Wnet()#build_model(args.model_name)
     cnet = Cnet()
     encoder = ResNet50Encoder()
-    abc = abc 
-
     if torch.cuda.is_available():
         wnet = wnet.cuda()
         cnet = cnet.cuda()
